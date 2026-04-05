@@ -1,0 +1,425 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1.0,maximum-scale=1.0,user-scalable=no,viewport-fit=cover"/>
+<title>Flight Display</title>
+<meta name="apple-mobile-web-app-capable" content="yes"/>
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+<meta name="apple-mobile-web-app-title" content="Flight Display"/>
+<meta name="mobile-web-app-capable" content="yes"/>
+<meta name="theme-color" content="#020617"/>
+<link rel="manifest" href='data:application/json,{"name":"Flight Display","short_name":"FlightDisp","start_url":".","display":"standalone","orientation":"landscape","background_color":"%23020617","theme_color":"%23020617"}'/>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html{height:100%;background:#020617}
+body{min-height:100%;background:#020617;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;color:#F0F9FF;overflow-x:hidden}
+input,select,button,a{font-family:inherit}
+input,select{color-scheme:dark}
+@keyframes blink{50%{opacity:0}}
+@keyframes fadeIn{from{opacity:0;transform:translateY(12px)}to{opacity:1;transform:translateY(0)}}
+@keyframes rainDrop{0%{transform:translateY(0);opacity:.7}100%{transform:translateY(110vh);opacity:0}}
+@keyframes snowFall{0%{transform:translateY(0) translateX(0);opacity:.8}50%{transform:translateY(50vh) translateX(20px);opacity:.6}100%{transform:translateY(110vh) translateX(-10px);opacity:0}}
+@keyframes lightning{0%,90%,100%{background:rgba(255,255,255,0)}92%{background:rgba(255,255,255,.15)}94%{background:rgba(255,255,255,0)}96%{background:rgba(255,255,255,.08)}}
+@keyframes twinkle{0%,100%{opacity:.3}50%{opacity:1}}
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script>
+(function(){
+"use strict";
+
+const SLIDE_MS_DEFAULT=12000;
+const SLIDE_MS_COUNTDOWN=40000;
+const MF="'SF Mono',ui-monospace,SFMono-Regular,Menlo,monospace";
+const SF="-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif";
+
+let mode="input";
+let data={currentFlight:"",totalHours:"",totalMinutes:"",totalSeconds:"",timeHours:"",timeMinutes:"",timeSeconds:"",arrivalTime:"",arrivalTimezone:"",arrivalCity:"",arrivalTerminal:"",arrivalGate:"",baggageClaim:"",weatherTemp:"",weatherCondition:"",weatherCity:"",weatherTime:"day",connections:[mkC()]};
+let secondsLeft=0,totalFS=0,activeSlide=0,timerID=null,carouselID=null,wakeSentinel=null;
+let tH=null,tM=null,tS=null,mH=null,mM=null,mS=null,pBar=null,pMark=null;
+
+function mkC(){return{city:"",flightNumber:"",gate:"",departureTime:"",estimatedTime:"",canceled:false}}
+function fmt(t){if(t<=0)return{h:"00",m:"00",s:"00"};return{h:String(Math.floor(t/3600)).padStart(2,"0"),m:String(Math.floor((t%3600)/60)).padStart(2,"0"),s:String(t%60).padStart(2,"0")};}
+function parseT(s){if(!s)return null;const m=s.match(/(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)?/);if(!m)return null;let hr=parseInt(m[1]),mn=parseInt(m[2]);const ap=(m[3]||"").toUpperCase();if(ap==="PM"&&hr<12)hr+=12;if(ap==="AM"&&hr===12)hr=0;return hr*60+mn;}
+function minBtw(a,d){const av=parseT(a),dv=parseT(d);if(av===null||dv===null)return null;let diff=dv-av;if(diff<0)diff+=1440;return diff;}
+
+function h(tag,attrs){const el=document.createElement(tag);if(attrs)Object.keys(attrs).forEach(k=>{if(k==="style"&&typeof attrs[k]==="object")Object.assign(el.style,attrs[k]);else if(k==="textContent")el.textContent=attrs[k];else if(k==="innerHTML")el.innerHTML=attrs[k];else if(k.startsWith("on"))el[k]=attrs[k];else el.setAttribute(k,attrs[k]);});for(let i=2;i<arguments.length;i++){const c=arguments[i];if(!c)continue;if(typeof c==="string")el.appendChild(document.createTextNode(c));else if(Array.isArray(c))c.forEach(x=>{if(x)el.appendChild(x)});else el.appendChild(c);}return el;}
+
+// Wake lock
+async function reqWake(){if(!("wakeLock" in navigator))return;try{wakeSentinel=await navigator.wakeLock.request("screen")}catch(e){}}
+function relWake(){if(wakeSentinel){wakeSentinel.release();wakeSentinel=null;}}
+document.addEventListener("visibilitychange",()=>{if(document.visibilityState==="visible"&&mode==="display")reqWake()});
+
+// Styles
+const IS={background:"rgba(15,23,42,0.8)",border:"1px solid rgba(56,189,248,0.2)",borderRadius:"8px",padding:"10px 14px",color:"#F0F9FF",fontSize:"15px",outline:"none",width:"100%",boxSizing:"border-box",fontFamily:MF};
+const LS={color:"rgba(148,163,184,0.7)",fontSize:"12px",letterSpacing:"2px",textTransform:"uppercase",marginBottom:"4px",display:"block"};
+const SS={color:"#38BDF8",fontSize:"16px",fontWeight:"600",letterSpacing:"3px",textTransform:"uppercase",marginBottom:"16px",borderBottom:"1px solid rgba(56,189,248,0.15)",paddingBottom:"8px"};
+const BP={width:"100%",padding:"16px 0",fontSize:"18px",fontWeight:"700",letterSpacing:"3px",textTransform:"uppercase",background:"linear-gradient(135deg,#0EA5E9,#38BDF8)",border:"none",borderRadius:"12px",color:"#020617",cursor:"pointer",boxShadow:"0 0 40px rgba(56,189,248,0.2)"};
+
+function mI(o){const i=h("input",{type:o.type||"text",placeholder:o.ph||"",style:{...IS,...(o.style||{})}});i.value=o.value||"";i.oninput=e=>{let v=e.target.value;if(o.numeric){v=v.replace(/\D/g,"");e.target.value=v;}o.onset(v);};return i;}
+function mL(t){return h("div",{style:LS,textContent:t})}
+function mS2(t){return h("div",{style:SS,textContent:t})}
+function mNK(val,onset){const w=h("div",{style:{display:"flex",alignItems:"center"}});w.appendChild(h("span",{style:{background:"rgba(56,189,248,0.1)",border:"1px solid rgba(56,189,248,0.2)",borderRight:"none",borderRadius:"8px 0 0 8px",padding:"10px",color:"#38BDF8",fontSize:"15px",fontWeight:"700",fontFamily:MF,letterSpacing:"1px",lineHeight:"1.35"},textContent:"NK"}));w.appendChild(mI({value:val,onset,numeric:true,ph:"e.g. 1057",style:{borderRadius:"0 8px 8px 0",fontFamily:MF}}));return w;}
+function mTog(chk,onset,lbl){const w=h("div",{style:{display:"flex",alignItems:"center",gap:"10px",cursor:"pointer",userSelect:"none"}});const tr=h("div",{style:{width:"44px",height:"24px",borderRadius:"12px",position:"relative",background:chk?"rgba(239,68,68,0.6)":"rgba(148,163,184,0.2)",border:chk?"1px solid rgba(239,68,68,0.5)":"1px solid rgba(148,163,184,0.15)",transition:"all 0.2s",cursor:"pointer"}});tr.appendChild(h("div",{style:{width:"18px",height:"18px",borderRadius:"50%",position:"absolute",top:"2px",left:chk?"22px":"2px",background:chk?"#EF4444":"#94A3B8",transition:"all 0.2s"}}));const lb=h("span",{style:{color:chk?"#EF4444":"rgba(148,163,184,0.7)",fontSize:"12px",letterSpacing:"2px",textTransform:"uppercase",fontWeight:chk?"600":"400",cursor:"pointer"},textContent:lbl});const tog=()=>{onset(!chk);render()};tr.onclick=tog;lb.onclick=tog;w.appendChild(tr);w.appendChild(lb);return w;}
+function mDayNight(val,onset){
+  const w=h("div",{style:{display:"flex",gap:"8px"}});
+  ["day","night"].forEach(v=>{
+    const active=val===v;
+    const btn=h("button",{style:{flex:"1",padding:"10px",borderRadius:"8px",border:active?"1px solid rgba(56,189,248,0.4)":"1px solid rgba(148,163,184,0.15)",background:active?(v==="day"?"rgba(251,191,36,0.12)":"rgba(99,102,241,0.12)"):"rgba(15,23,42,0.5)",color:active?(v==="day"?"#FBBF24":"#A5B4FC"):"rgba(148,163,184,0.5)",fontSize:"14px",fontWeight:active?"600":"400",cursor:"pointer",letterSpacing:"1px",textTransform:"capitalize",transition:"all 0.2s"},textContent:v==="day"?"☀ Day":"🌙 Night",onclick:()=>{onset(v);render();}});
+    w.appendChild(btn);
+  });
+  return w;
+}
+
+// ── Weather ─────────────────────────────────────────────────────────
+function wxBg(cond,tod){
+  const c=(cond||"").toLowerCase();const n=tod==="night";
+  if(c.includes("sun")||c.includes("clear"))return n?"linear-gradient(180deg,#020617 0%,#0f172a 30%,#1e1b4b 70%,#312e81 100%)":"linear-gradient(180deg,#0c4a6e 0%,#0369a1 30%,#f59e0b 85%,#fbbf24 100%)";
+  if(c.includes("cloud")&&(c.includes("sun")||c.includes("part")))return n?"linear-gradient(180deg,#020617 0%,#1e293b 40%,#334155 80%,#475569 100%)":"linear-gradient(180deg,#1e3a5f 0%,#4a8cb8 40%,#94a3b8 75%,#cbd5e1 100%)";
+  if(c.includes("cloud")||c.includes("overcast"))return n?"linear-gradient(180deg,#0f172a 0%,#1e293b 40%,#334155 80%,#475569 100%)":"linear-gradient(180deg,#334155 0%,#64748b 40%,#94a3b8 80%,#cbd5e1 100%)";
+  if(c.includes("rain")||c.includes("shower"))return n?"linear-gradient(180deg,#020617 0%,#0f172a 30%,#1e293b 60%,#334155 100%)":"linear-gradient(180deg,#1e293b 0%,#334155 30%,#475569 60%,#64748b 100%)";
+  if(c.includes("storm")||c.includes("thunder"))return n?"linear-gradient(180deg,#000000 0%,#0f172a 30%,#1e293b 60%,#334155 100%)":"linear-gradient(180deg,#0f172a 0%,#1e293b 25%,#334155 55%,#475569 100%)";
+  if(c.includes("snow"))return n?"linear-gradient(180deg,#1e293b 0%,#334155 35%,#475569 70%,#64748b 100%)":"linear-gradient(180deg,#94a3b8 0%,#cbd5e1 35%,#e2e8f0 70%,#f1f5f9 100%)";
+  return n?"linear-gradient(180deg,#020617 0%,#0f172a 50%,#1e293b 100%)":"linear-gradient(180deg,#0f172a 0%,#1e293b 50%,#334155 100%)";
+}
+function wxIcon(cond,sz,tod){
+  const c=(cond||"").toLowerCase();const n=tod==="night";let svg="";
+  if(c.includes("sun")||c.includes("clear")){
+    if(n)svg=`<circle cx="50" cy="50" r="20" fill="#CBD5E1" opacity="0.9"/><circle cx="43" cy="45" r="5" fill="#94A3B8" opacity="0.3"/><circle cx="55" cy="53" r="3" fill="#94A3B8" opacity="0.2"/><circle cx="47" cy="57" r="4" fill="#94A3B8" opacity="0.25"/>`;
+    else svg=`<circle cx="50" cy="50" r="22" fill="#FBBF24"/>${[0,45,90,135,180,225,270,315].map(a=>`<line x1="50" y1="12" x2="50" y2="22" stroke="#FBBF24" stroke-width="3" stroke-linecap="round" transform="rotate(${a} 50 50)"/>`).join("")}`;
+  }else if(c.includes("cloud")&&(c.includes("sun")||c.includes("part"))){
+    if(n)svg=`<circle cx="30" cy="30" r="12" fill="#CBD5E1" opacity="0.8"/><circle cx="25" cy="28" r="3" fill="#94A3B8" opacity="0.2"/><ellipse cx="55" cy="62" rx="28" ry="16" fill="${n?"#475569":"#94A3B8"}"/><ellipse cx="42" cy="58" rx="18" ry="14" fill="${n?"#64748B":"#CBD5E1"}"/><ellipse cx="65" cy="58" rx="16" ry="12" fill="${n?"#64748B":"#CBD5E1"}"/>`;
+    else svg=`<circle cx="35" cy="35" r="16" fill="#FBBF24"/><ellipse cx="55" cy="62" rx="28" ry="16" fill="#94A3B8"/><ellipse cx="42" cy="58" rx="18" ry="14" fill="#CBD5E1"/><ellipse cx="65" cy="58" rx="16" ry="12" fill="#CBD5E1"/>`;
+  }else if(c.includes("rain")||c.includes("shower")){
+    const cf=n?"#475569":"#94A3B8",cl=n?"#64748B":"#CBD5E1";
+    svg=`<ellipse cx="50" cy="40" rx="30" ry="16" fill="${cf}"/><ellipse cx="36" cy="35" rx="18" ry="14" fill="${cl}"/><ellipse cx="62" cy="35" rx="16" ry="12" fill="${cl}"/><line x1="35" y1="60" x2="31" y2="76" stroke="#60A5FA" stroke-width="3" stroke-linecap="round"/><line x1="50" y1="60" x2="46" y2="76" stroke="#60A5FA" stroke-width="3" stroke-linecap="round"/><line x1="65" y1="60" x2="61" y2="76" stroke="#60A5FA" stroke-width="3" stroke-linecap="round"/>`;
+  }else if(c.includes("storm")||c.includes("thunder")){
+    svg=`<ellipse cx="50" cy="36" rx="30" ry="16" fill="${n?"#334155":"#64748B"}"/><polygon points="48,52 42,68 52,65 46,84 58,60 50,63 56,52" fill="#FBBF24"/>`;
+  }else if(c.includes("snow")){
+    const cf=n?"#64748B":"#CBD5E1",cl=n?"#94A3B8":"#E2E8F0";
+    svg=`<ellipse cx="50" cy="40" rx="30" ry="16" fill="${cf}"/><ellipse cx="36" cy="35" rx="18" ry="14" fill="${cl}"/><circle cx="35" cy="68" r="4" fill="${cl}"/><circle cx="50" cy="76" r="4" fill="${cl}"/><circle cx="65" cy="68" r="4" fill="${cl}"/>`;
+  }else if(c.includes("cloud")||c.includes("overcast")){
+    const cf=n?"#475569":"#94A3B8",cl=n?"#64748B":"#CBD5E1";
+    svg=`<ellipse cx="50" cy="58" rx="32" ry="18" fill="${cf}"/><ellipse cx="36" cy="52" rx="20" ry="16" fill="${cl}"/><ellipse cx="62" cy="52" rx="18" ry="14" fill="${cl}"/>`;
+  }else{
+    svg=`<ellipse cx="50" cy="55" rx="30" ry="16" fill="${n?"#475569":"#94A3B8"}"/><ellipse cx="38" cy="50" rx="18" ry="14" fill="${n?"#64748B":"#CBD5E1"}"/><ellipse cx="60" cy="50" rx="16" ry="12" fill="${n?"#64748B":"#CBD5E1"}"/>`;
+  }
+  const el=h("div",{innerHTML:`<svg viewBox="0 0 100 100" width="${sz}" height="${sz}">${svg}</svg>`});return el.firstChild;
+}
+function wxStars(){
+  const w=h("div",{style:{position:"absolute",inset:"0",overflow:"hidden",pointerEvents:"none",zIndex:"0"}});
+  for(let i=0;i<60;i++){const sz=1+Math.random()*2.5;w.appendChild(h("div",{style:{position:"absolute",left:Math.random()*100+"%",top:Math.random()*70+"%",width:sz+"px",height:sz+"px",background:"#fff",borderRadius:"50%",opacity:String(0.2+Math.random()*0.6),animation:`twinkle ${2+Math.random()*4}s ease-in-out ${Math.random()*3}s infinite`}}));}
+  return w;
+}
+function wxParticles(cond){const c=(cond||"").toLowerCase();const w=h("div",{style:{position:"absolute",inset:"0",overflow:"hidden",pointerEvents:"none",zIndex:"0"}});if(c.includes("rain")||c.includes("shower")){for(let i=0;i<40;i++)w.appendChild(h("div",{style:{position:"absolute",left:(i*2.5+Math.random()*2)+"%",top:-(10+Math.random()*20)+"%",width:"2px",height:(18+Math.random()*14)+"px",background:"rgba(96,165,250,0.25)",borderRadius:"2px",animation:`rainDrop ${0.6+Math.random()*0.5}s linear ${Math.random()*1.5}s infinite`}}))}else if(c.includes("snow")){for(let i=0;i<30;i++){const s2=6+Math.random()*6;w.appendChild(h("div",{style:{position:"absolute",left:(i*3.3+Math.random()*3)+"%",top:-(5+Math.random()*10)+"%",width:s2+"px",height:s2+"px",background:"rgba(255,255,255,0.5)",borderRadius:"50%",animation:`snowFall ${2.5+Math.random()*2}s linear ${Math.random()*3}s infinite`}}))}}else if(c.includes("storm")||c.includes("thunder")){for(let i=0;i<50;i++)w.appendChild(h("div",{style:{position:"absolute",left:(i*2+Math.random()*2)+"%",top:-(10+Math.random()*20)+"%",width:"2px",height:(22+Math.random()*18)+"px",background:"rgba(96,165,250,0.2)",borderRadius:"2px",animation:`rainDrop ${0.4+Math.random()*0.3}s linear ${Math.random()}s infinite`}}));w.appendChild(h("div",{style:{position:"absolute",inset:"0",animation:"lightning 4s ease-in-out infinite",background:"rgba(255,255,255,0)"}}))}else return null;return w;}
+
+// ── Slides ──────────────────────────────────────────────────────────
+function getSlides(){const s=[{type:"countdown"}];if(data.arrivalTerminal||data.arrivalGate||data.baggageClaim)s.push({type:"arrival"});if(data.weatherCity||data.weatherTemp)s.push({type:"weather"});const v=data.connections.filter(c=>c.city||c.flightNumber);for(let i=0;i<v.length;i+=2)s.push({type:"connections",pair:v.slice(i,i+2)});return s;}
+
+// Timer tick — only updates text nodes
+function tick(){if(secondsLeft>0)secondsLeft--;const t=fmt(secondsLeft);if(tH){tH.textContent=t.h;tM.textContent=t.m;tS.textContent=t.s;}if(mH){mH.textContent=t.h;mM.textContent=t.m;mS.textContent=t.s;}if(pBar&&totalFS>0){const p=Math.min(100,Math.max(0,((totalFS-secondsLeft)/totalFS)*100));pBar.style.width=p+"%";if(pMark){pMark.style.left=p+"%";pMark.querySelector("span").textContent=Math.round(p)+"%";}}}
+function startT(){stopT();timerID=setInterval(tick,1000);}
+function stopT(){if(timerID){clearInterval(timerID);timerID=null;}}
+function startC(){stopC();const sl=getSlides();if(sl.length<=1)return;const ms=sl[activeSlide]?.type==="countdown"?SLIDE_MS_COUNTDOWN:SLIDE_MS_DEFAULT;carouselID=setTimeout(()=>{activeSlide=(activeSlide+1)%sl.length;buildD();startC();},ms);}
+function stopC(){if(carouselID){clearTimeout(carouselID);carouselID=null;}}
+function adv(){stopC();const sl=getSlides();activeSlide=(activeSlide+1)%sl.length;buildD();startC();}
+
+// ── Display Build ───────────────────────────────────────────────────
+function buildD(){
+  tH=tM=tS=mH=mM=mS=pBar=pMark=null;
+  const app=document.getElementById("app");app.innerHTML="";
+  app.style.cssText="width:100vw;height:100vh;position:fixed;top:0;left:0;overflow:hidden;";
+  const sl=getSlides(),cur=sl[activeSlide]||sl[0];
+
+  // Mini timer
+  if(cur.type!=="countdown"){
+    const t=fmt(secondsLeft);
+    const mi=h("div",{style:{position:"fixed",top:"16px",left:"16px",zIndex:"1000",background:"rgba(2,6,23,0.85)",backdropFilter:"blur(12px)",border:"1px solid rgba(56,189,248,0.25)",borderRadius:"12px",padding:"8px 18px",display:"flex",alignItems:"baseline",gap:"2px",fontFamily:MF}});
+    mi.appendChild(h("span",{style:{color:"rgba(148,163,184,0.7)",fontSize:"11px",letterSpacing:"1px",marginRight:"8px",textTransform:"uppercase"},textContent:"ETE"}));
+    mH=h("span",{style:{color:"#38BDF8",fontSize:"22px",fontWeight:"700"},textContent:t.h});mi.appendChild(mH);
+    mi.appendChild(h("span",{style:{color:"rgba(56,189,248,0.4)",fontSize:"18px"},textContent:":"}));
+    mM=h("span",{style:{color:"#38BDF8",fontSize:"22px",fontWeight:"700"},textContent:t.m});mi.appendChild(mM);
+    mi.appendChild(h("span",{style:{color:"rgba(56,189,248,0.4)",fontSize:"18px"},textContent:":"}));
+    mS=h("span",{style:{color:"#38BDF8",fontSize:"22px",fontWeight:"700"},textContent:t.s});mi.appendChild(mS);
+    app.appendChild(mi);
+  }
+
+  app.appendChild(h("button",{style:{position:"fixed",top:"16px",right:"16px",zIndex:"1000",background:"rgba(2,6,23,0.85)",backdropFilter:"blur(12px)",border:"1px solid rgba(148,163,184,0.15)",borderRadius:"10px",padding:"8px 16px",color:"rgba(148,163,184,0.6)",fontSize:"13px",cursor:"pointer",letterSpacing:"1px"},textContent:"✎ Update",onclick:()=>{mode="quick";render();}}));
+
+  const main=h("div",{style:{width:"100%",height:"100%",background:cur.type==="weather"?"transparent":"#020617",cursor:"pointer",position:"relative"},onclick:e=>{if(e.target.tagName!=="BUTTON"&&e.target.tagName!=="A")adv();}});
+  if(cur.type!=="weather")main.appendChild(h("div",{style:{position:"absolute",inset:"0",opacity:"0.03",backgroundImage:"linear-gradient(rgba(56,189,248,0.5) 1px,transparent 1px),linear-gradient(90deg,rgba(56,189,248,0.5) 1px,transparent 1px)",backgroundSize:"60px 60px"}}));
+
+  const ct=h("div",{style:{position:"relative",zIndex:"1",height:"100%",animation:"fadeIn 0.5s ease-out"}});
+  if(cur.type==="countdown")ct.appendChild(bCountdown());
+  else if(cur.type==="arrival")ct.appendChild(bArrival());
+  else if(cur.type==="weather")ct.appendChild(bWeather());
+  else if(cur.type==="connections")ct.appendChild(bConns(cur.pair));
+  main.appendChild(ct);
+
+  const dots=h("div",{style:{position:"absolute",bottom:"24px",left:"50%",transform:"translateX(-50%)",display:"flex",gap:"10px",zIndex:"10"}});
+  sl.forEach((_,i)=>dots.appendChild(h("div",{style:{width:i===activeSlide?"28px":"10px",height:"10px",borderRadius:"5px",background:i===activeSlide?"#38BDF8":"rgba(148,163,184,0.25)",transition:"all 0.4s"}})));
+  main.appendChild(dots);app.appendChild(main);
+}
+
+function bCountdown(){
+  const t=fmt(secondsLeft);
+  const w=h("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",padding:"0 80px 0 20px",position:"relative"}});
+  if(data.currentFlight)w.appendChild(h("div",{style:{color:"#38BDF8",fontSize:"28px",fontWeight:"700",letterSpacing:"4px",fontFamily:MF,marginBottom:"6px"},textContent:"NK"+data.currentFlight}));
+  w.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"18px",letterSpacing:"6px",textTransform:"uppercase",marginBottom:"8px"},textContent:"Time to Destination"}));
+
+  // Timer: H:M centered, :SS positioned absolutely outside flow
+  const row=h("div",{style:{position:"relative",display:"inline-flex",alignItems:"baseline",fontFamily:MF}});
+  tH=h("span",{style:{color:"#F0F9FF",fontSize:"min(26vw,260px)",fontWeight:"700",lineHeight:"1"},textContent:t.h});
+  row.appendChild(tH);
+  row.appendChild(h("span",{style:{color:"rgba(56,189,248,0.35)",fontSize:"min(18vw,180px)",fontWeight:"300",animation:"blink 1.5s step-end infinite",margin:"0 2px"},textContent:":"}));
+  tM=h("span",{style:{color:"#F0F9FF",fontSize:"min(26vw,260px)",fontWeight:"700",lineHeight:"1"},textContent:t.m});
+  row.appendChild(tM);
+  // Seconds: absolutely positioned off the right so they don't shift center
+  const secWrap=h("div",{style:{position:"absolute",right:"0",top:"50%",transform:"translate(100%,-40%)",display:"flex",alignItems:"baseline",gap:"2px"}});
+  secWrap.appendChild(h("span",{style:{color:"rgba(56,189,248,0.2)",fontSize:"min(7vw,70px)",fontWeight:"300"},textContent:":"}));
+  tS=h("span",{style:{color:"rgba(148,163,184,0.45)",fontSize:"min(7vw,70px)",fontWeight:"600",lineHeight:"1"},textContent:t.s});
+  secWrap.appendChild(tS);
+  row.appendChild(secWrap);
+  w.appendChild(row);
+
+  // Landing info
+  const rule=h("div",{style:{display:"flex",alignItems:"center",gap:"16px",marginTop:"16px"}});
+  rule.appendChild(h("div",{style:{width:"80px",height:"1px",background:"linear-gradient(90deg,transparent,rgba(56,189,248,0.3))"}}));
+  rule.appendChild(h("div",{style:{color:"rgba(148,163,184,0.45)",fontSize:"15px",letterSpacing:"4px",textTransform:"uppercase"},textContent:"Estimated Landing"}));
+  rule.appendChild(h("div",{style:{width:"80px",height:"1px",background:"linear-gradient(90deg,rgba(56,189,248,0.3),transparent)"}}));
+  w.appendChild(rule);
+  const arr=h("div",{style:{color:"#38BDF8",fontSize:"64px",fontWeight:"600",letterSpacing:"3px",marginTop:"4px"}});
+  arr.textContent=data.arrivalTime||"--:--";
+  if(data.arrivalTimezone)arr.innerHTML+=' <span style="font-size:24px;color:rgba(148,163,184,0.5)">'+data.arrivalTimezone+'</span>';
+  w.appendChild(arr);
+
+  // Progress bar with end marker
+  if(totalFS>0){
+    const pct=Math.min(100,Math.max(0,((totalFS-secondsLeft)/totalFS)*100));
+    const bw=h("div",{style:{position:"absolute",bottom:"52px",left:"15%",right:"15%",zIndex:"20"}});
+    const bo=h("div",{style:{width:"100%",height:"14px",background:"rgba(148,163,184,0.1)",borderRadius:"7px",overflow:"visible",position:"relative"}});
+    pBar=h("div",{style:{width:pct+"%",height:"100%",background:"linear-gradient(90deg,#0EA5E9,#38BDF8)",borderRadius:"7px",transition:"width 1s linear"}});
+    bo.appendChild(pBar);
+    // Marker at end
+    pMark=h("div",{style:{position:"absolute",top:"-28px",left:pct+"%",transform:"translateX(-50%)",transition:"left 1s linear",display:"flex",flexDirection:"column",alignItems:"center"}});
+    pMark.appendChild(h("span",{style:{background:"rgba(56,189,248,0.2)",color:"#38BDF8",fontSize:"13px",fontWeight:"700",fontFamily:MF,padding:"2px 8px",borderRadius:"6px",letterSpacing:"1px"},textContent:Math.round(pct)+"%"}));
+    pMark.appendChild(h("div",{style:{width:"2px",height:"8px",background:"#38BDF8",borderRadius:"1px",marginTop:"2px"}}));
+    bo.appendChild(pMark);
+    bw.appendChild(bo);w.appendChild(bw);
+  }
+  return w;
+}
+
+function bArrival(){
+  const w=h("div",{style:{display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:"10px",padding:"0 40px"}});
+  w.appendChild(h("div",{style:{color:"rgba(148,163,184,0.6)",fontSize:"16px",letterSpacing:"4px",textTransform:"uppercase"},textContent:"Arrival Information"}));
+  if(data.currentFlight)w.appendChild(h("div",{style:{color:"#38BDF8",fontSize:"24px",fontWeight:"700",fontFamily:MF,letterSpacing:"3px"},textContent:"NK"+data.currentFlight}));
+  if(data.arrivalCity)w.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"48px",fontWeight:"700",letterSpacing:"2px",marginTop:"4px"},textContent:data.arrivalCity}));
+
+  // Arrival time with label
+  w.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"14px",letterSpacing:"3px",textTransform:"uppercase",marginTop:"12px"},textContent:"Estimated Arrival Time"}));
+  const at=h("div",{style:{color:"#38BDF8",fontSize:"64px",fontWeight:"600",letterSpacing:"3px"}});
+  at.textContent=data.arrivalTime||"--:--";
+  if(data.arrivalTimezone)at.innerHTML+=' <span style="font-size:24px;color:rgba(148,163,184,0.5)">'+data.arrivalTimezone+'</span>';
+  w.appendChild(at);
+
+  const cards=h("div",{style:{display:"flex",gap:"48px",marginTop:"20px"}});
+  if(data.arrivalTerminal){const c=h("div",{style:{textAlign:"center"}});c.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"14px",letterSpacing:"3px",textTransform:"uppercase"},textContent:"Terminal"}));c.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"72px",fontWeight:"700",fontFamily:MF,lineHeight:"1.1"},textContent:data.arrivalTerminal}));cards.appendChild(c);}
+  if(data.arrivalGate){const c=h("div",{style:{textAlign:"center"}});c.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"14px",letterSpacing:"3px",textTransform:"uppercase"},textContent:"Gate"}));c.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"72px",fontWeight:"700",fontFamily:MF,lineHeight:"1.1"},textContent:data.arrivalGate}));cards.appendChild(c);}
+  if(data.baggageClaim){const c=h("div",{style:{textAlign:"center"}});c.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"14px",letterSpacing:"3px",textTransform:"uppercase"},textContent:"Baggage Claim"}));c.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"72px",fontWeight:"700",fontFamily:MF,lineHeight:"1.1"},textContent:data.baggageClaim}));cards.appendChild(c);}
+  w.appendChild(cards);
+  return w;
+}
+
+function bWeather(){
+  const cond=data.weatherCondition,tod=data.weatherTime;
+  const isN=tod==="night";
+  const isSnowDay=(cond||"").toLowerCase().includes("snow")&&!isN;
+  const w=h("div",{style:{position:"relative",height:"100%",width:"100%",background:wxBg(cond,tod),overflow:"hidden"}});
+  // Stars for night clear/partly
+  if(isN){const cl=(cond||"").toLowerCase();if(cl.includes("clear")||cl.includes("sun")||cl.includes("part"))w.appendChild(wxStars());}
+  const p=wxParticles(cond);if(p)w.appendChild(p);
+  const inner=h("div",{style:{position:"relative",zIndex:"1",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",height:"100%",gap:"8px"}});
+  inner.appendChild(h("div",{style:{color:isN?"rgba(255,255,255,0.4)":"rgba(255,255,255,0.5)",fontSize:"18px",letterSpacing:"6px",textTransform:"uppercase"},textContent:"Weather at Destination"}));
+  inner.appendChild(h("div",{style:{color:"#fff",fontSize:"44px",fontWeight:"700",letterSpacing:"2px",textShadow:"0 2px 20px rgba(0,0,0,0.3)"},textContent:data.weatherCity||"—"}));
+  inner.appendChild(wxIcon(cond,180,tod));
+
+  // Temperature: center just the number, degree off to the right
+  const tempWrap=h("div",{style:{position:"relative",display:"inline-block"}});
+  const tempNum=h("span",{style:{color:isSnowDay?"#1e293b":"#F0F9FF",fontSize:"min(18vw,160px)",fontWeight:"700",lineHeight:"1",textShadow:"0 4px 30px rgba(0,0,0,0.25)",display:"block"},textContent:data.weatherTemp||"--"});
+  const tempDeg=h("span",{style:{color:isSnowDay?"rgba(30,41,59,0.5)":"rgba(255,255,255,0.4)",fontSize:"min(6vw,60px)",fontWeight:"400",position:"absolute",top:"0.05em",left:"100%",marginLeft:"4px"},textContent:"°"});
+  tempWrap.appendChild(tempNum);tempWrap.appendChild(tempDeg);
+  inner.appendChild(tempWrap);
+
+  inner.appendChild(h("div",{style:{color:isSnowDay?"rgba(30,41,59,0.7)":isN?"rgba(255,255,255,0.55)":"rgba(255,255,255,0.65)",fontSize:"36px",fontWeight:"500",textTransform:"capitalize",textShadow:"0 2px 12px rgba(0,0,0,0.2)"},textContent:cond||"—"}));
+  w.appendChild(inner);return w;
+}
+
+function bConns(pair){
+  const w=h("div",{style:{display:"flex",flexDirection:"column",height:"100%",justifyContent:"center",gap:"40px",padding:"0 40px"}});
+  w.appendChild(h("div",{style:{color:"rgba(148,163,184,0.6)",fontSize:"16px",letterSpacing:"4px",textTransform:"uppercase",textAlign:"center"},textContent:"Connecting Flights"}));
+  pair.forEach(c=>{
+    if(c.canceled){
+      const cd=h("div",{style:{background:"rgba(15,23,42,0.6)",border:"1px solid rgba(239,68,68,0.25)",borderRadius:"16px",padding:"36px 40px",display:"flex",alignItems:"center",justifyContent:"space-between"}});
+      const l=h("div");l.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"42px",fontWeight:"700",lineHeight:"1.1"},textContent:c.city||"—"}));l.appendChild(h("div",{style:{color:"#38BDF8",fontSize:"26px",fontWeight:"600",marginTop:"8px",fontFamily:MF,letterSpacing:"2px"},textContent:c.flightNumber?"NK"+c.flightNumber:"—"}));cd.appendChild(l);
+      cd.appendChild(h("div",{style:{color:"#EF4444",fontSize:"52px",fontWeight:"800",letterSpacing:"6px",textTransform:"uppercase",textShadow:"0 0 30px rgba(239,68,68,0.3)",padding:"8px 28px",border:"3px solid rgba(239,68,68,0.5)",borderRadius:"12px",background:"rgba(239,68,68,0.08)"},textContent:"CANCELED"}));
+      w.appendChild(cd);
+    }else{
+      const cd=h("div",{style:{background:"rgba(15,23,42,0.6)",border:"1px solid rgba(56,189,248,0.12)",borderRadius:"16px",padding:"32px 40px",display:"grid",gridTemplateColumns:"1fr auto 1fr",alignItems:"center",gap:"24px"}});
+      const l=h("div");l.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"42px",fontWeight:"700",lineHeight:"1.1"},textContent:c.city||"—"}));l.appendChild(h("div",{style:{color:"#38BDF8",fontSize:"26px",fontWeight:"600",marginTop:"8px",fontFamily:MF,letterSpacing:"2px"},textContent:c.flightNumber?"NK"+c.flightNumber:"—"}));
+      const depStr=c.estimatedTime||c.departureTime;
+      const gap=minBtw(data.arrivalTime,depStr);
+      if(gap!==null&&gap<60&&gap>=0){
+        const wn=h("div",{style:{display:"flex",alignItems:"center",gap:"6px",marginTop:"10px"}});
+        wn.appendChild(h("span",{innerHTML:'<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="#FBBF24" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>'}));
+        wn.appendChild(h("span",{style:{color:"#FBBF24",fontSize:"14px",fontWeight:"700",letterSpacing:"1px",textTransform:"uppercase"},textContent:"Tight Connection"}));
+        l.appendChild(wn);
+      }
+      cd.appendChild(l);
+      const cn=h("div",{style:{textAlign:"center"}});cn.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"13px",letterSpacing:"3px",textTransform:"uppercase"},textContent:"Gate"}));cn.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"56px",fontWeight:"700",fontFamily:MF,lineHeight:"1.1"},textContent:c.gate||"—"}));cd.appendChild(cn);
+      const r=h("div",{style:{textAlign:"right"}});r.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"13px",letterSpacing:"3px",textTransform:"uppercase"},textContent:"Departs"}));r.appendChild(h("div",{style:{color:"#F0F9FF",fontSize:"36px",fontWeight:"600"},textContent:c.departureTime||"--:--"}));
+      if(c.estimatedTime&&c.estimatedTime!==c.departureTime){
+        const dw=h("div",{style:{marginTop:"6px"}});dw.appendChild(h("span",{style:{background:"rgba(251,146,60,0.15)",color:"#FB923C",fontSize:"14px",fontWeight:"600",padding:"3px 10px",borderRadius:"6px",letterSpacing:"1px",textTransform:"uppercase"},textContent:"Delayed"}));dw.appendChild(h("div",{style:{color:"#FB923C",fontSize:"28px",fontWeight:"600",marginTop:"4px"},textContent:"Est "+c.estimatedTime}));r.appendChild(dw);
+      }else{r.appendChild(h("div",{style:{marginTop:"6px"}},h("span",{style:{background:"rgba(34,197,94,0.12)",color:"#22C55E",fontSize:"14px",fontWeight:"600",padding:"3px 10px",borderRadius:"6px",letterSpacing:"1px",textTransform:"uppercase"},textContent:"On Time"})));}
+      cd.appendChild(r);w.appendChild(cd);
+    }
+  });
+  return w;
+}
+
+// ── Input Form ──────────────────────────────────────────────────────
+function renderInput(){
+  const app=document.getElementById("app");app.innerHTML="";
+  app.style.cssText="min-height:100vh;background:#020617;overflow-y:auto;-webkit-overflow-scrolling:touch;";
+  const outer=h("div",{style:{display:"flex",justifyContent:"center",padding:"40px 20px 60px"}});
+  const inner=h("div",{style:{width:"100%",maxWidth:"800px"}});
+  inner.appendChild(h("div",{style:{textAlign:"center",marginBottom:"40px"}},h("div",{style:{fontSize:"32px",fontWeight:"700",color:"#F0F9FF",letterSpacing:"2px"},textContent:"✈ Flight Display"}),h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"14px",marginTop:"8px",letterSpacing:"1px"},textContent:"Passenger Information System"})));
+
+  // Current Flight
+  const fs=h("div",{style:{marginBottom:"32px"}});fs.appendChild(mS2("Current Flight"));
+  const fnR=h("div",{style:{marginBottom:"16px"}});fnR.appendChild(mL("Flight Number"));const fnW=h("div",{style:{width:"180px"}});fnW.appendChild(mNK(data.currentFlight,v=>{data.currentFlight=v}));fnR.appendChild(fnW);fs.appendChild(fnR);
+  fs.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"12px",letterSpacing:"1px",marginBottom:"12px",fontStyle:"italic"},textContent:"Total flight duration (for progress bar)"}));
+  const totG=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"16px",marginBottom:"20px"}});
+  [["Total Hours","totalHours"],["Total Minutes","totalMinutes"],["Total Seconds","totalSeconds"]].forEach(([l,k])=>{const d=h("div");d.appendChild(mL(l));d.appendChild(mI({value:data[k],onset:v=>{data[k]=v},type:"number",ph:k.includes("H")?"0":"00",style:{textAlign:"center",fontSize:"20px"}}));totG.appendChild(d);});
+  fs.appendChild(totG);
+  fs.appendChild(h("div",{style:{color:"rgba(148,163,184,0.5)",fontSize:"12px",letterSpacing:"1px",marginBottom:"12px",fontStyle:"italic"},textContent:"Time remaining from now"}));
+  const tG=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 2px 1fr 1fr",gap:"16px",alignItems:"end"}});
+  [["Hours","timeHours"],["Minutes","timeMinutes"],["Seconds","timeSeconds"]].forEach(([l,k])=>{const d=h("div");d.appendChild(mL(l));d.appendChild(mI({value:data[k],onset:v=>{data[k]=v},type:"number",ph:k.includes("H")?"0":"00",style:{textAlign:"center",fontSize:"20px"}}));tG.appendChild(d);});
+  tG.appendChild(h("div",{style:{width:"2px",background:"rgba(56,189,248,0.15)",alignSelf:"stretch",marginBottom:"4px",borderRadius:"1px"}}));
+  const ltD=h("div");ltD.appendChild(mL("Landing Time"));ltD.appendChild(mI({value:data.arrivalTime,onset:v=>{data.arrivalTime=v},ph:"e.g. 3:45 PM"}));tG.appendChild(ltD);
+  const tzD=h("div");tzD.appendChild(mL("Timezone"));tzD.appendChild(mI({value:data.arrivalTimezone,onset:v=>{data.arrivalTimezone=v},ph:"e.g. EST"}));tG.appendChild(tzD);
+  fs.appendChild(tG);inner.appendChild(fs);
+
+  // Arrival
+  const as=h("div",{style:{marginBottom:"32px"}});as.appendChild(mS2("Arrival Information"));
+  const aG=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"16px"}});
+  [["City","arrivalCity","e.g. Miami"],["Terminal","arrivalTerminal","e.g. C"],["Gate","arrivalGate","e.g. C18"],["Baggage Claim","baggageClaim","e.g. 4"]].forEach(([l,k,p])=>{const d=h("div");d.appendChild(mL(l));d.appendChild(mI({value:data[k],onset:v=>{data[k]=v},ph:p}));aG.appendChild(d);});
+  as.appendChild(aG);inner.appendChild(as);
+
+  // Weather
+  const ws=h("div",{style:{marginBottom:"32px"}});ws.appendChild(mS2("Destination Weather"));
+  const wG=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"16px"}});
+  const wcD=h("div");wcD.appendChild(mL("City"));wcD.appendChild(mI({value:data.weatherCity,onset:v=>{data.weatherCity=v},ph:"e.g. Miami"}));wG.appendChild(wcD);
+  const wtD=h("div");wtD.appendChild(mL("Temperature (°F)"));wtD.appendChild(mI({value:data.weatherTemp,onset:v=>{data.weatherTemp=v},ph:"e.g. 82"}));wG.appendChild(wtD);
+  const wdD=h("div");wdD.appendChild(mL("Condition"));
+  const sel=h("select",{style:{...IS,cursor:"pointer"}});
+  ["","Sunny","Partly Cloudy","Cloudy","Rain","Thunderstorm","Snow"].forEach(v=>{const o=h("option",{value:v});o.textContent=v||"Select…";if(v===data.weatherCondition)o.selected=true;sel.appendChild(o)});
+  sel.onchange=e=>{data.weatherCondition=e.target.value};wdD.appendChild(sel);wG.appendChild(wdD);
+  const wnD=h("div");wnD.appendChild(mL("Time of Day"));wnD.appendChild(mDayNight(data.weatherTime,v=>{data.weatherTime=v}));wG.appendChild(wnD);
+  ws.appendChild(wG);inner.appendChild(ws);
+
+  // Connections
+  const cs=h("div",{style:{marginBottom:"32px"}});
+  const cH=h("div",{style:{...SS,display:"flex",justifyContent:"space-between",alignItems:"center"}});
+  cH.appendChild(h("span",{textContent:"Connecting Flights"}));
+  cH.appendChild(h("button",{style:{background:"rgba(56,189,248,0.1)",border:"1px solid rgba(56,189,248,0.3)",color:"#38BDF8",borderRadius:"6px",padding:"6px 16px",cursor:"pointer",fontSize:"13px",fontWeight:"600"},textContent:"+ Add Connection",onclick:()=>{data.connections.push(mkC());render()}}));
+  cs.appendChild(cH);
+  data.connections.forEach((c,idx)=>{
+    const cd=h("div",{style:{background:c.canceled?"rgba(239,68,68,0.04)":"rgba(15,23,42,0.4)",border:"1px solid "+(c.canceled?"rgba(239,68,68,0.15)":"rgba(56,189,248,0.08)"),borderRadius:"12px",padding:"20px",marginBottom:"16px"}});
+    const hd=h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"12px"}});
+    hd.appendChild(h("span",{style:{color:"rgba(148,163,184,0.5)",fontSize:"13px",fontWeight:"600"},textContent:"Connection "+(idx+1)}));
+    const hr=h("div",{style:{display:"flex",gap:"16px",alignItems:"center"}});
+    hr.appendChild(mTog(c.canceled,v=>{data.connections[idx].canceled=v},"Canceled"));
+    if(data.connections.length>1)hr.appendChild(h("button",{style:{background:"rgba(239,68,68,0.1)",border:"1px solid rgba(239,68,68,0.25)",color:"#EF4444",borderRadius:"6px",padding:"4px 12px",cursor:"pointer",fontSize:"12px"},textContent:"Remove",onclick:()=>{data.connections.splice(idx,1);render()}}));
+    hd.appendChild(hr);cd.appendChild(hd);
+    const r1=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"12px",marginBottom:"12px"}});
+    const ciD=h("div");ciD.appendChild(mL("City"));ciD.appendChild(mI({value:c.city,onset:v=>{data.connections[idx].city=v},ph:"e.g. Atlanta"}));r1.appendChild(ciD);
+    const fnD=h("div");fnD.appendChild(mL("Flight Number"));fnD.appendChild(mNK(c.flightNumber,v=>{data.connections[idx].flightNumber=v}));r1.appendChild(fnD);
+    const gD=h("div",{style:{opacity:c.canceled?"0.3":"1",pointerEvents:c.canceled?"none":"auto"}});gD.appendChild(mL("Gate"));gD.appendChild(mI({value:c.gate,onset:v=>{data.connections[idx].gate=v},ph:"e.g. B22"}));r1.appendChild(gD);
+    cd.appendChild(r1);
+    if(!c.canceled){const r2=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr",gap:"12px"}});const dpD=h("div");dpD.appendChild(mL("Scheduled Departure"));dpD.appendChild(mI({value:c.departureTime,onset:v=>{data.connections[idx].departureTime=v},ph:"e.g. 5:30 PM"}));r2.appendChild(dpD);const edD=h("div");edD.appendChild(mL("Estimated (if delayed)"));edD.appendChild(mI({value:c.estimatedTime,onset:v=>{data.connections[idx].estimatedTime=v},ph:"Leave blank if on time"}));r2.appendChild(edD);cd.appendChild(r2);}
+    cs.appendChild(cd);
+  });
+  inner.appendChild(cs);
+
+  inner.appendChild(h("button",{style:BP,textContent:"Start Display ▸",onclick:()=>{
+    secondsLeft=(parseInt(data.timeHours)||0)*3600+(parseInt(data.timeMinutes)||0)*60+(parseInt(data.timeSeconds)||0);
+    totalFS=(parseInt(data.totalHours)||0)*3600+(parseInt(data.totalMinutes)||0)*60+(parseInt(data.totalSeconds)||0);
+    if(totalFS===0)totalFS=secondsLeft;
+    activeSlide=0;mode="display";render();
+  }}));
+  outer.appendChild(inner);app.appendChild(outer);
+}
+
+// ── Quick Update ────────────────────────────────────────────────────
+function renderQuick(){
+  const app=document.getElementById("app");app.innerHTML="";
+  app.style.cssText="min-height:100vh;background:#020617;overflow-y:auto;-webkit-overflow-scrolling:touch;";
+  const hms=secondsLeft>0?{h:String(Math.floor(secondsLeft/3600)),m:String(Math.floor((secondsLeft%3600)/60)),s:String(secondsLeft%60)}:{h:"0",m:"0",s:"0"};
+  let eH=hms.h,eM=hms.m,eS=hms.s,te=false;
+  const outer=h("div",{style:{display:"flex",justifyContent:"center",padding:"30px 20px 60px"}});
+  const inner=h("div",{style:{width:"100%",maxWidth:"700px"}});
+  const hd=h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:"28px"}});
+  const hl=h("div");hl.appendChild(h("div",{style:{fontSize:"24px",fontWeight:"700",color:"#F0F9FF",letterSpacing:"1px"},textContent:"Quick Update"}));hl.appendChild(h("div",{style:{color:"rgba(148,163,184,0.4)",fontSize:"13px",marginTop:"4px"},textContent:"Adjust in-flight changes — timer continues running"}));hd.appendChild(hl);
+  hd.appendChild(h("button",{style:{background:"rgba(148,163,184,0.08)",border:"1px solid rgba(148,163,184,0.15)",borderRadius:"8px",padding:"8px 16px",color:"rgba(148,163,184,0.6)",fontSize:"13px",cursor:"pointer",letterSpacing:"1px"},textContent:"Full Edit",onclick:()=>{mode="input";render()}}));
+  inner.appendChild(hd);
+
+  // Time
+  const ts=h("div",{style:{marginBottom:"28px"}});ts.appendChild(h("div",{style:{...SS,fontSize:"15px",marginBottom:"14px"},textContent:"Flight Time & Landing"}));
+  const tg=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 2px 1fr",gap:"14px",alignItems:"end"}});
+  [["Hours",eH,v=>{eH=v;te=true}],["Minutes",eM,v=>{eM=v;te=true}],["Seconds",eS,v=>{eS=v;te=true}]].forEach(([l,v,fn])=>{const d=h("div");d.appendChild(mL(l));d.appendChild(mI({value:v,onset:fn,type:"number",style:{textAlign:"center",fontSize:"20px"}}));tg.appendChild(d);});
+  tg.appendChild(h("div",{style:{width:"2px",background:"rgba(56,189,248,0.15)",alignSelf:"stretch",marginBottom:"4px",borderRadius:"1px"}}));
+  const qlt=h("div");qlt.appendChild(mL("Landing Time"));qlt.appendChild(mI({value:data.arrivalTime,onset:v=>{data.arrivalTime=v}}));tg.appendChild(qlt);
+  ts.appendChild(tg);inner.appendChild(ts);
+
+  // Arrival
+  const qs=h("div",{style:{marginBottom:"28px"}});qs.appendChild(h("div",{style:{...SS,fontSize:"15px",marginBottom:"14px"},textContent:"Arrival Info"}));
+  const qag=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr 1fr",gap:"14px"}});
+  [["City","arrivalCity"],["Terminal","arrivalTerminal"],["Gate","arrivalGate"],["Baggage","baggageClaim"]].forEach(([l,k])=>{const d=h("div");d.appendChild(mL(l));d.appendChild(mI({value:data[k],onset:v=>{data[k]=v}}));qag.appendChild(d);});
+  qs.appendChild(qag);inner.appendChild(qs);
+
+  // Connections
+  const connS=h("div",{style:{marginBottom:"28px"}});connS.appendChild(h("div",{style:{...SS,fontSize:"15px",marginBottom:"14px"},textContent:"Connecting Flights"}));
+  data.connections.forEach((c,idx)=>{
+    const cd=h("div",{style:{background:c.canceled?"rgba(239,68,68,0.04)":"rgba(15,23,42,0.4)",border:"1px solid "+(c.canceled?"rgba(239,68,68,0.15)":"rgba(56,189,248,0.08)"),borderRadius:"12px",padding:"16px 20px",marginBottom:"12px"}});
+    const rw=h("div",{style:{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:c.canceled?"0":"14px"}});
+    const inf=h("div",{style:{display:"flex",alignItems:"baseline",gap:"12px"}});
+    inf.appendChild(h("span",{style:{color:"#F0F9FF",fontSize:"18px",fontWeight:"700"},textContent:c.city||"—"}));
+    inf.appendChild(h("span",{style:{color:"#38BDF8",fontSize:"15px",fontWeight:"600",fontFamily:MF,letterSpacing:"1px"},textContent:c.flightNumber?"NK"+c.flightNumber:"—"}));
+    rw.appendChild(inf);rw.appendChild(mTog(c.canceled,v=>{data.connections[idx].canceled=v},"Canceled"));cd.appendChild(rw);
+    if(!c.canceled){const fl=h("div",{style:{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:"12px"}});const gD=h("div");gD.appendChild(mL("Gate"));gD.appendChild(mI({value:c.gate,onset:v=>{data.connections[idx].gate=v},style:{fontSize:"18px",fontWeight:"600",fontFamily:MF,textAlign:"center"}}));fl.appendChild(gD);const dD=h("div");dD.appendChild(mL("Sched. Departure"));dD.appendChild(mI({value:c.departureTime,onset:v=>{data.connections[idx].departureTime=v}}));fl.appendChild(dD);const eD=h("div");eD.appendChild(mL("Estimated (delay)"));eD.appendChild(mI({value:c.estimatedTime,onset:v=>{data.connections[idx].estimatedTime=v},ph:"If delayed"}));fl.appendChild(eD);cd.appendChild(fl);}
+    connS.appendChild(cd);
+  });
+  inner.appendChild(connS);
+
+  inner.appendChild(h("button",{style:BP,textContent:"Resume Display ▸",onclick:()=>{
+    if(te)secondsLeft=(parseInt(eH)||0)*3600+(parseInt(eM)||0)*60+(parseInt(eS)||0);
+    mode="display";render();
+  }}));
+  outer.appendChild(inner);app.appendChild(outer);
+}
+
+// ── Master Render ───────────────────────────────────────────────────
+function render(){
+  stopC();tH=tM=tS=mH=mM=mS=pBar=pMark=null;
+  if(mode==="input"){stopT();relWake();renderInput();}
+  else if(mode==="quick"){renderQuick();if(!timerID)startT();}
+  else if(mode==="display"){buildD();startT();startC();reqWake();}
+}
+render();
+})();
+</script>
+</body>
+</html>
